@@ -3,10 +3,14 @@
 
 #include <cstddef>
 
+#define DEEPSPEECH_EXPORT __attribute__ ((visibility("default")))
+
 namespace DeepSpeech
 {
 
   class Private;
+
+  void print_versions();
 
   class Model {
     private:

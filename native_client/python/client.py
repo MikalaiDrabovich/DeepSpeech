@@ -4,9 +4,10 @@ from __future__ import absolute_import, division, print_function
 from timeit import default_timer as timer
 
 import argparse
+import subprocess
 import sys
 import scipy.io.wavfile as wav
-
+import numpy as np
 from deepspeech.model import Model
 
 # These constants control the beam search decoder
@@ -35,18 +36,34 @@ N_FEATURES = 26
 # Size of the context window used for producing timesteps in the input vector
 N_CONTEXT = 9
 
+def convert_samplerate(audio_path):
+    sox_cmd = 'sox {} --type raw --bits 16 --channels 1 --rate 16000 - '.format(audio_path)
+    try:
+        p = subprocess.Popen(sox_cmd.split(),
+                             stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        output, err = p.communicate()
+
+        if p.returncode:
+            raise RuntimeError('SoX returned non-zero status: {}'.format(err))
+
+    except OSError as e:
+        raise OSError('SoX not found, use 16kHz files or install it: ', e)
+
+    audio = np.fromstring(output, dtype=np.int16)
+    return 16000, audio
+
 def main():
     parser = argparse.ArgumentParser(description='Benchmarking tooling for DeepSpeech native_client.')
     parser.add_argument('model', type=str,
                         help='Path to the model (protocol buffer binary file)')
-    parser.add_argument('audio', type=str,
-                        help='Path to the audio file to run (WAV format)')
     parser.add_argument('alphabet', type=str,
                         help='Path to the configuration file specifying the alphabet used by the network')
     parser.add_argument('lm', type=str, nargs='?',
                         help='Path to the language model binary file')
     parser.add_argument('trie', type=str, nargs='?',
                         help='Path to the language model trie file created with native_client/generate_trie')
+    parser.add_argument('audio', type=str,
+                        help='Path to the audio file to run (WAV format)')
     args = parser.parse_args()
 
     print('Loading model from file %s' % (args.model), file=sys.stderr)
@@ -64,9 +81,11 @@ def main():
         print('Loaded language model in %0.3fs.' % (lm_load_end), file=sys.stderr)
 
     fs, audio = wav.read(args.audio)
-    # We can assume 16kHz
+    if fs != 16000:
+        if fs < 16000:
+            print('Warning: original sample rate (%d) is lower than 16kHz. Up-sampling might produce erratic speech recognition.' % (fs), file=sys.stderr)
+        fs, audio = convert_samplerate(args.audio)
     audio_length = len(audio) * ( 1 / 16000)
-    assert fs == 16000, "Only 16000Hz input WAV files are supported for now!"
 
     print('Running inference.', file=sys.stderr)
     inference_start = timer()

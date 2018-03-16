@@ -4,7 +4,7 @@
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 
-#include "native_client/deepspeech_model.h" // generated
+#include "native_client/deepspeech_model_core.h" // generated
 #endif
 
 #include <iostream>
@@ -14,8 +14,12 @@
 #include "alphabet.h"
 #include "beam_search.h"
 
+#include "tensorflow/core/public/version.h"
+#include "native_client/ds_version.h"
+
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/util/memmapped_file_system.h"
 
 #define BATCH_SIZE 1
 
@@ -27,6 +31,7 @@ namespace DeepSpeech {
 
 class Private {
   public:
+    MemmappedEnv* mmap_env;
     Session* session;
     GraphDef graph_def;
     int ncep;
@@ -37,10 +42,12 @@ class Private {
     bool run_aot;
 };
 
+DEEPSPEECH_EXPORT
 Model::Model(const char* aModelPath, int aNCep, int aNContext,
              const char* aAlphabetConfigPath, int aBeamWidth)
 {
   mPriv             = new Private;
+  mPriv->mmap_env   = new MemmappedEnv(Env::Default());
   mPriv->session    = NULL;
   mPriv->scorer     = NULL;
   mPriv->ncep       = aNCep;
@@ -49,19 +56,47 @@ Model::Model(const char* aModelPath, int aNCep, int aNContext,
   mPriv->beam_width = aBeamWidth;
   mPriv->run_aot    = false;
 
+  print_versions();
+
   if (!aModelPath || strlen(aModelPath) < 1) {
     std::cerr << "No model specified, will rely on built-in model." << std::endl;
     mPriv->run_aot = true;
     return;
   }
 
-  Status status = NewSession(SessionOptions(), &mPriv->session);
+  Status status;
+  SessionOptions options;
+  bool is_mmap = std::string(aModelPath).find(".pbmm") != std::string::npos;
+  if (!is_mmap) {
+    std::cerr << "Warning: reading entire model file into memory. Transform model file into an mmapped graph to reduce heap usage." << std::endl;
+  }
+
+  if (is_mmap) {
+    status = mPriv->mmap_env->InitializeFromFile(aModelPath);
+    if (!status.ok()) {
+      std::cerr << status.ToString() << std::endl;
+      return;
+    }
+
+    options.config.mutable_graph_options()
+      ->mutable_optimizer_options()
+      ->set_opt_level(::OptimizerOptions::L0);
+    options.env = mPriv->mmap_env;
+  }
+
+  status = NewSession(options, &mPriv->session);
   if (!status.ok()) {
     std::cerr << status.ToString() << std::endl;
     return;
   }
 
-  status = ReadBinaryProto(Env::Default(), aModelPath, &mPriv->graph_def);
+  if (is_mmap) {
+    status = ReadBinaryProto(mPriv->mmap_env,
+                             MemmappedFileSystem::kMemmappedPackageDefaultGraphDef,
+                             &mPriv->graph_def);
+  } else {
+    status = ReadBinaryProto(Env::Default(), aModelPath, &mPriv->graph_def);
+  }
   if (!status.ok()) {
     mPriv->session->Close();
     mPriv->session = NULL;
@@ -97,18 +132,21 @@ Model::Model(const char* aModelPath, int aNCep, int aNContext,
   }
 }
 
+DEEPSPEECH_EXPORT
 Model::~Model()
 {
   if (mPriv->session) {
     mPriv->session->Close();
   }
 
+  delete mPriv->mmap_env;
   delete mPriv->alphabet;
   delete mPriv->scorer;
 
   delete mPriv;
 }
 
+DEEPSPEECH_EXPORT
 void
 Model::enableDecoderWithLM(const char* aAlphabetConfigPath, const char* aLMPath,
                            const char* aTriePath, float aLMWeight,
@@ -118,6 +156,7 @@ Model::enableDecoderWithLM(const char* aAlphabetConfigPath, const char* aLMPath,
                                       aLMWeight, aWordCountWeight, aValidWordCountWeight);
 }
 
+DEEPSPEECH_EXPORT
 void
 Model::getInputVector(const short* aBuffer, unsigned int aBufferSize,
                            int aSampleRate, float** aMfcc, int* aNFrames,
@@ -204,6 +243,7 @@ Model::decode(int aNFrames, float*** aLogits)
   return output;
 }
 
+DEEPSPEECH_EXPORT
 char*
 Model::infer(float* aMfcc, int aNFrames, int aFrameLen)
 {
@@ -226,7 +266,7 @@ Model::infer(float* aMfcc, int aNFrames, int aFrameLen)
     Eigen::ThreadPool tp(2);  // Size the thread pool as appropriate.
     Eigen::ThreadPoolDevice device(&tp, tp.NumThreads());
 
-    nativeModel nm(nativeModel::AllocMode::RESULTS_AND_TEMPS_ONLY);
+    nativeModel nm(nativeModel::AllocMode::RESULTS_PROFILES_AND_TEMPS_ONLY);
     nm.set_thread_pool(&device);
 
     for (int ot = 0; ot < timesteps; ot += DS_MODEL_TIMESTEPS) {
@@ -303,6 +343,7 @@ Model::infer(float* aMfcc, int aNFrames, int aFrameLen)
   return decode(aNFrames, input_data_mat);
 }
 
+DEEPSPEECH_EXPORT
 char*
 Model::stt(const short* aBuffer, unsigned int aBufferSize, int aSampleRate)
 {
@@ -314,6 +355,13 @@ Model::stt(const short* aBuffer, unsigned int aBufferSize, int aSampleRate)
   string = infer(mfcc, n_frames);
   free(mfcc);
   return string;
+}
+
+DEEPSPEECH_EXPORT
+void
+print_versions() {
+  std::cerr << "TensorFlow: " << tf_git_version() << std::endl;
+  std::cerr << "DeepSpeech: " << ds_git_version() << std::endl;
 }
 
 }

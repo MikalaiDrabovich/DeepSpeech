@@ -69,10 +69,11 @@ ln -s ../DeepSpeech/native_client ./
 
 Before building the DeepSpeech client libraries, you will need to prepare your environment to configure and build TensorFlow. Follow the [instructions](https://www.tensorflow.org/install/install_sources) on the TensorFlow site for your platform, up to the end of 'Configure the installation'.
 
-Then you can build the Tensorflow and DeepSpeech libraries.
+Then you can build the Tensorflow and DeepSpeech libraries. Please note that the flags for `libctc_decoder_with_kenlm.so` differs a little bit.
 
 ```
-bazel build -c opt --copt=-O3 //tensorflow:libtensorflow_cc.so //tensorflow:libtensorflow_framework.so //native_client:deepspeech //native_client:deepspeech_utils //native_client:libctc_decoder_with_kenlm.so //native_client:generate_trie
+bazel build -c opt --copt=-O3 //native_client:libctc_decoder_with_kenlm.so
+bazel build --config=monolithic -c opt --copt=-O3 --copt=-fvisibility=hidden //native_client:libdeepspeech.so //native_client:deepspeech_utils //native_client:generate_trie
 ```
 
 Finally, you can change to the `native_client` directory and use the `Makefile`. By default, the `Makefile` will assume there is a TensorFlow checkout in a directory above the DeepSpeech checkout. If that is not the case, set the environment variable `TFDIR` to point to the right directory.
@@ -85,7 +86,7 @@ make deepspeech
 ## Building with AOT model
 
 First, please note that this is still experimental. AOT model relies on TensorFlow's [AOT tfcompile](https://www.tensorflow.org/performance/xla/tfcompile) tooling. It takes a protocol buffer file graph as input, and produces a .so library that one can call from C++ code.
-To experiment, you will need to build TensorFlow from [github.com/mozilla/tensorflow master branch](https://github.com/mozilla/tensorflow). Follow TensorFlow's documentation for the configuration of your system.
+To experiment, you will need to build TensorFlow from [github.com/mozilla/tensorflow r1.6 branch](https://github.com/mozilla/tensorflow/tree/r1.6). Follow TensorFlow's documentation for the configuration of your system.
 When building, you will have to add some extra parameter and targets.
 
 Bazel defines:
@@ -95,18 +96,17 @@ Bazel defines:
 * `--define=DS_MODEL_FILE=/path/to/graph.pb`: the model you want to use
 
 Bazel targets:
-* `//native_client:deepspeech_model`: to produce `libdeepspeech_model.so`
-* `//tensorflow/compiler/aot:runtime `, `//tensorflow/compiler/xla/service/cpu:runtime_matmul`, `//tensorflow/compiler/xla:executable_run_options`
+* `//native_client:libdeepspeech_model.so`: to produce `libdeepspeech_model.so`
 
-In the end, the previous example becomes:
+In the end, the previous example becomes (no change for `libctc_decoder_with_kenlm.so`):
 
 ```
-bazel build -c opt --copt=-O3 --define=DS_NATIVE_MODEL=1 --define=DS_MODEL_TIMESTEPS=64 --define=DS_MODEL_FRAMESIZE=494 --define=DS_MODEL_FILE=/tmp/model.ldc93s1.pb //tensorflow:libtensorflow_cc.so //tensorflow:libtensorflow_framework.so //native_client:deepspeech_model //tensorflow/compiler/aot:runtime //tensorflow/compiler/xla/service/cpu:runtime_matmul //tensorflow/compiler/xla:executable_run_options //native_client:deepspeech //native_client:deepspeech_utils //native_client:libctc_decoder_with_kenlm.so //native_client:generate_trie
+bazel build --config=monolithic -c opt --copt=-O3 --copt=-fvisibility=hidden --define=DS_NATIVE_MODEL=1 --define=DS_MODEL_TIMESTEPS=64 --define=DS_MODEL_FRAMESIZE=494 --define=DS_MODEL_FILE=/tmp/model.ldc93s1.pb //native_client:libdeepspeech_model.so //native_client:libdeepspeech.so //native_client:deepspeech_utils //native_client:generate_trie
 ```
 
 Later, when building either `deepspeech` binaries or bindings, you will have to add some extra variables to your `make` command-line (assuming `TFDIR` points to your TensorFlow's git clone):
 ```
-EXTRA_LDFLAGS="-L${TFDIR}/bazel-bin/tensorflow/compiler/xla/ -L${TFDIR}/bazel-bin/tensorflow/compiler/aot/ -L${TFDIR}/bazel-bin/tensorflow/compiler/xla/service/cpu/" EXTRA_LIBS="-ldeepspeech_model -lruntime -lexecutable_run_options -lruntime_matmul"
+EXTRA_LIBS="-ldeepspeech_model"
 ```
 
 ## Installing
@@ -124,7 +124,7 @@ It is assumed that `$PREFIX/lib` is a valid library path, otherwise you may need
 The client can be run via the `Makefile`. The client will accept audio of any format your installation of SoX supports.
 
 ```
-ARGS="/path/to/output_graph.pb /path/to/audio/file.ogg" make run
+ARGS="/path/to/output_graph.pbmm /path/to/audio/file.ogg" make run
 ```
 
 ## Python bindings
@@ -149,4 +149,4 @@ make package
 make npm-pack
 ```
 
-This will create the package `deepspeech-0.1.0.tgz` in `native_client/javascript`.
+This will create the package `deepspeech-0.1.1.tgz` in `native_client/javascript`.

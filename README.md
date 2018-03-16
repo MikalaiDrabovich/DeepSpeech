@@ -15,14 +15,14 @@ Once everything is installed you can then use the `deepspeech` binary to do spee
 
 ```bash
 pip install deepspeech
-deepspeech models/output_graph.pb my_audio_file.wav models/alphabet.txt
+deepspeech models/output_graph.pb models/alphabet.txt my_audio_file.wav
 ```
 
 Alternatively, quicker inference (The realtime factor on a GeForce GTX 1070 is about 0.44.) can be performed using a supported NVIDIA GPU on Linux. (See the release notes to find which GPU's are supported.) This is done by instead installing the GPU specific package:
 
 ```bash
 pip install deepspeech-gpu
-deepspeech models/output_graph.pb my_audio_file.wav models/alphabet.txt
+deepspeech models/output_graph.pb models/alphabet.txt my_audio_file.wav
 ```
 
 See the output of `deepspeech -h` for more information on the use of `deepspeech`. (If you experience problems running `deepspeech`, please check [required runtime dependencies](native_client/README.md#required-dependencies)).
@@ -46,7 +46,8 @@ See the output of `deepspeech -h` for more information on the use of `deepspeech
   - [Checkpointing](#checkpointing)
   - [Exporting a model for inference](#exporting-a-model-for-inference)
   - [Distributed computing across more than one machine](#distributed-training-across-more-than-one-machine)
-- [Documentation](#documentation)
+  - [Continuing training from a frozen graph](#continuing-training-from-a-frozen-graph)
+- [Code documentation](#code-documentation)
 - [Contact/Getting Help](#contactgetting-help)
 
 ## Prerequisites
@@ -67,7 +68,7 @@ git clone https://github.com/mozilla/DeepSpeech
 If you want to use the pre-trained English model for performing speech-to-text, you can download it (along with other important inference material) from the [DeepSpeech releases page](https://github.com/mozilla/DeepSpeech/releases). Alternatively, you can run the following command to download and unzip the files in your current directory:
 
 ```bash
-wget -O - https://github.com/mozilla/DeepSpeech/releases/download/v0.1.0/deepspeech-0.1.0-models.tar.gz | tar xvfz -
+wget -O - https://github.com/mozilla/DeepSpeech/releases/download/v0.1.1/deepspeech-0.1.1-models.tar.gz | tar xvfz -
 ```
 
 ## Using the model
@@ -133,7 +134,7 @@ In both cases, it should take care of installing all the required dependencies. 
 Note: the following command assumes you [downloaded the pre-trained model](#getting-the-pre-trained-model).
 
 ```bash
-deepspeech models/output_graph.pb my_audio_file.wav models/alphabet.txt models/lm.binary models/trie
+deepspeech models/output_graph.pbmm models/alphabet.txt models/lm.binary models/trie my_audio_file.wav
 ```
 
 The last two arguments are optional, and represent a language model.
@@ -159,7 +160,7 @@ This will download `native_client.tar.xz` which includes the deepspeech binary a
 Note: the following command assumes you [downloaded the pre-trained model](#getting-the-pre-trained-model).
 
 ```bash
-./deepspeech models/output_graph.pb audio_input.wav models/alphabet.txt models/lm.binary models/trie
+./deepspeech models/output_graph.pbmm models/alphabet.txt models/lm.binary models/trie audio_input.wav
 ```
 
 
@@ -192,6 +193,7 @@ In addition to the bindings above, third party developers have started to provid
 * [Asticode](https://github.com/asticode) provides [Golang](https://golang.org) bindings in its [go-astideepspeech](https://github.com/asticode/go-astideepspeech) repo.
 * [RustAudio](https://github.com/RustAudio) provide a [Rust](https://www.rust-lang.org) binding, the installation and use of which is described in their [deepspeech-rs](https://github.com/RustAudio/deepspeech-rs) repo.
 * [stes](https://github.com/stes) provides preliminary [PKGBUILDs](https://wiki.archlinux.org/index.php/PKGBUILD) to install the client and python bindings on [Arch Linux](https://www.archlinux.org/) in the [arch-deepspeech](https://github.com/stes/arch-deepspeech) repo.
+* [gst-deepspeech](https://github.com/Elleo/gst-deepspeech) provides a [GStreamer](https://gstreamer.freedesktop.org/) plugin which can be used from any language with GStreamer bindings.
 
 ## Training
 
@@ -201,8 +203,6 @@ Install the required dependencies using pip:
 
 ```bash
 cd DeepSpeech
-python util/taskcluster.py --target /tmp --source tensorflow --artifact tensorflow_warpctc-1.4.0-cp27-cp27mu-linux_x86_64.whl
-pip install /tmp/tensorflow_warpctc-1.4.0-cp27-cp27mu-linux_x86_64.whl
 pip install -r requirements.txt
 ```
 
@@ -220,8 +220,7 @@ If you have a capable (Nvidia, at least 8GB of VRAM) GPU, it is highly recommend
 
 ```bash
 pip uninstall tensorflow
-python util/taskcluster.py --target /tmp --source tensorflow --arch gpu --artifact tensorflow_gpu_warpctc-1.4.0-cp27-cp27mu-linux_x86_64.whl
-pip install /tmp/tensorflow_gpu_warpctc-1.4.0-cp27-cp27mu-linux_x86_64.whl
+pip install 'tensorflow-gpu==1.6.0'
 ```
 
 ### Common Voice training data
@@ -306,6 +305,19 @@ Be aware however that checkpoints are only valid for the same model geometry the
 If the `--export_dir` parameter is provided, a model will have been exported to this directory during training.
 Refer to the corresponding [README.md](native_client/README.md) for information on building and running a client that can use the exported model.
 
+### Making a mmap-able model for inference
+
+The `output_graph.pb` model file generated in the above step will be loaded in memory to be dealt with when running inference.
+This will result in extra loading time and memory consumption. One way to avoid this is to directly read data from the disk.
+
+TensorFlow has tooling to achieve this: it requires building the target `//tensorflow/contrib/util:convert_graphdef_memmapped_format` (binaries are produced by our TaskCluster for some systems including Linux/amd64 and macOS/amd64).
+Producing a mmap-able model is as simple as:
+```
+$ convert_graphdef_memmapped_format --in_graph=output_graph.pb --out_graph=output_graph.pbmm
+```
+
+Upon sucessfull run, it should report about conversion of a non zero number of nodes. If it reports converting 0 nodes, something is wrong: make sure your model is a frozen one, and that you have not applied any incompatible changes (this includes `quantize_weights`).
+
 ### Distributed training across more than one machine
 
 DeepSpeech has built-in support for [distributed TensorFlow](https://www.tensorflow.org/deploy/distributed). To get an idea on how this works, you can use the script `bin/run-cluster.sh` for running a cluster with workers just on the local machine.
@@ -329,9 +341,22 @@ $ run-cluster.sh 1:2:1 --epoch 10
 Be aware that for the help example to be able to run, you need at least two `CUDA` capable GPUs (2 workers times 1 GPU). The script utilizes environment variable `CUDA_VISIBLE_DEVICES` for `DeepSpeech.py` to see only the provided number of GPUs per worker.
 The script is meant to be a template for your own distributed computing instrumentation. Just modify the startup code for the different servers (workers and parameter servers) accordingly. You could use SSH or something similar for running them on your remote hosts.
 
-## Documentation
+### Continuing training from a frozen graph
 
-Documentation (incomplete) for the project can be found here: http://deepspeech.readthedocs.io/en/latest/
+If you'd like to use one of the pre-trained models released by Mozilla to bootstrap your training process (transfer learning, fine tuning), you can do so by using the `--initialize_from_frozen_model` flag in `DeepSpeech.py`. For best results, make sure you're passing an empty `--checkpoint_dir` when resuming from a frozen model.
+
+For example, if you want to fine tune the entire graph using your own data in `my-train.csv`, `my-dev.csv` and `my-test.csv`, for three epochs, you can something like the following, tuning the hyperparameters as needed:
+
+```bash
+mkdir fine_tuning_checkpoints
+python DeepSpeech.py --n_hidden 2048 --initialize_from_frozen_model path/to/model/output_graph.pb --checkpoint_dir fine_tuning_checkpoints --epoch 3 --train_files my-train.csv --dev_files my-dev.csv --test_files my_dev.csv --learning_rate 0.0001
+```
+
+Note: the released models were trained with `--n_hidden 2048`, so you need to use that same value when initializing from the release models.
+
+## Code documentation
+
+Documentation (incomplete) for the code can be found here: http://deepspeech.readthedocs.io/en/latest/
 
 ## Contact/Getting Help
 

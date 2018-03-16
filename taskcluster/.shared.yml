@@ -1,6 +1,9 @@
 python:
   packages:
     apt: 'make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev'
+  brew:
+    setup: 'install_local_homebrew "python-ds-test" && install_pkg_local_homebrew "sox"'
+    env: 'export EXTRA_ENV="PATH=$TASKCLUSTER_TASK_DIR/python-ds-test.brew/bin/:$PATH"'
 nodejs:
   packages:
     apt: 'nodejs sox'
@@ -29,7 +32,7 @@ nodejs:
 ## force 3.0.10 for nodejs V8 API compatibility
 swig:
   packages:
-    install_script: 'wget http://mirrors.kernel.org/ubuntu/pool/universe/s/swig/swig_3.0.10-1.1_amd64.deb -O /tmp/swig_3.0.10-1.1_amd64.deb && wget http://mirrors.kernel.org/ubuntu/pool/universe/s/swig/swig3.0_3.0.10-1.1_amd64.deb -O /tmp/swig3.0_3.0.10-1.1_amd64.deb && dpkg -i /tmp/swig_3.0.10-1.1_amd64.deb /tmp/swig3.0_3.0.10-1.1_amd64.deb'
+    install_script: 'wget http://mirrors.kernel.org/ubuntu/pool/universe/s/swig/swig_3.0.10-1.2_amd64.deb -O /tmp/swig_3.0.10-1.2_amd64.deb && wget http://mirrors.kernel.org/ubuntu/pool/universe/s/swig/swig3.0_3.0.10-1.2_amd64.deb -O /tmp/swig3.0_3.0.10-1.2_amd64.deb && dpkg -i /tmp/swig_3.0.10-1.2_amd64.deb /tmp/swig3.0_3.0.10-1.2_amd64.deb'
   patch_nodejs:
     linux: '(for patch_file in /home/build-user/DeepSpeech/ds/native_client/swig_node_v7x-v8x-v9x_*.patch; do patch -d /usr/share/swig3.0/ -p2 < $patch_file; done)'
     # Test if we can reverse patch #2:
@@ -59,3 +62,4 @@ system:
     osx: '/Users/build-user'
 notifications:
   irc: '#machinelearning'
+aptEc2Mirrors: 'sed -ri -e "s|archive.ubuntu.com|${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com|g" -e "s|security.ubuntu.com|${TASKCLUSTER_WORKER_GROUP}.ec2.archive.ubuntu.com|g" /etc/apt/sources.list'
