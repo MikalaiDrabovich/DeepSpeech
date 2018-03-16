@@ -1849,27 +1849,17 @@ def train(server=None):
                                 op_info_found = True
                         else:
                             print("metadata is none")
-                            
-                        # ------------------7 ------------------
-                        
-                        
-                        # ----8 ----
-                            # dump traces
+
+                        # dump traces
                         print('Step# ', current_step)       
                         if current_step - last_stats_step >= steps_per_stats:    
                           fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-                          chrome_trace = fetched_timeline.generate_chrome_trace_format(show_memory=True) # <------------!!!
+                          chrome_trace = fetched_timeline.generate_chrome_trace_format(show_memory=True) # show_memory=True is required 
                           print('Traces saved at step ', current_step)
                           last_stats_step = current_step
-                          
-                          #csv_file_output = open("timeline_deepspeech_for_deepbench_hidden_%d_batch_%d_timesteps_%d_step_%d.json" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch, current_step),'w')
-  
-  
-                          #with open('timeline_seq2seq_%d.json' % current_step, 'w') as f: #APPEND ?!?
                           with open("timeline_deepspeech_for_deepbench_hidden_%d_batch_%d_timesteps_%d_step_%d.json" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch, current_step),'w') as f:
                               f.write(chrome_trace)  
         
-                        # ----- 8 ---- -
                         # Add batch to loss
                         total_loss += batch_loss
 
@@ -1954,15 +1944,9 @@ def train(server=None):
       
 
 
-
-
     import csv
-    #csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d.csv" % (n_hidden, FLAGS.train_batch_size),'w')
-    csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.tsv" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch),'w')
-  
+    csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.tsv" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch),'w')  
     writer = csv.writer(csv_file_output, delimiter='\t')#,quoting=csv.QUOTE_MINIMAL) quotechar='"', 
-
-    print('--------------------------------------')
     header_str = "Time Rank\tTime %\tCumulative time %\tTime, ms\tOp name\tInput/output tensor shapes"
     header_str_csv = ['Time Rank', 'Time % total', 'Cumulative time %', 'Wall Time, ms', 'Op name', 'Input/output tensor shape']
    
@@ -1991,7 +1975,6 @@ def train(server=None):
               #print('IO tensor dimensions: ', final_map_shapes[ionodename])
           else:
               shape_str = 'N/A'
-
               #print('IO tensor dimensions not found for ', ionodename , " and ", orig_k)
       
       cumul_time += 100.0*tot_time_in_top_ops1/float(tot_time_in_all_ops)
@@ -2001,44 +1984,6 @@ def train(server=None):
     
       print(current_row_output)
       writer.writerow(current_row_output_csv)
-      
-      
-      
-      #np.savetxt('data.csv', (col1_array, col2_array, col3_array), delimiter=',')
-
-        
-      #print("Node: %s\t Shapes - %s" % (k, ' '.join(shape_str)))
-
-
-      #        
-      # print('--------------------------------------')    
-      
-      #topk_ops_printed = topk_ops_printed + 1
-      #if topk_ops_printed == top_k_ops:
-      #    break
-    print('--------------------------------------')    
-
-    #csv_file_output.close()
-
-
-    """
-    csv_file_output.close()
-
-    import pandas as pd
-    import xlsxwriter
-
-    csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.csv" % (n_hidden, FLAGS.train_batch_size),'w')
-  
-    path7 = csv_file_output
-    #read the csv into a pandas dataframe
-    data7 = pd.read_csv(path7)    
-    #setup the writer
-    writer = pd.ExcelWriter("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.csv" % (n_hidden, FLAGS.train_batch_size) +  '.xlsx', engine='xlsxwriter')
-    #write the dataframe to an xlsx file
-    data7.to_excel(writer, sheet_name='Results', index=False)
-    writer.save()
-    """
-
     
     mean_time_per_step = float(total_time1)/num_train_steps
     mean_allops_time_per_step = float(tot_time_in_all_ops)/(num_train_steps*1000000.0)
