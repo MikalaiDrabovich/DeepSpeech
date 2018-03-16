@@ -29,6 +29,10 @@ from util.text import sparse_tensor_value_to_texts, wer, levenshtein, Alphabet, 
 from xdg import BaseDirectory as xdg
 import numpy as np
 
+from tensorflow.python.client import timeline
+from collections import defaultdict
+from tensorflow.python.framework import tensor_shape
+
 
 # Importer
 # ========
@@ -381,6 +385,23 @@ def variable_on_worker_level(name, shape, initializer):
         var = tf.get_variable(name=name, shape=shape, initializer=initializer)
     return var
 
+def print_out(s, f=None, new_line=True):
+  if isinstance(s, bytes):
+    s = s.decode("utf-8")
+
+  if f:
+    f.write(s.encode("utf-8"))
+    if new_line:
+      f.write(b"\n")
+
+  out_s = s.encode("utf-8")
+  if not isinstance(out_s, str):
+    out_s = out_s.decode("utf-8")
+  print(out_s, end="", file=sys.stdout)
+
+  if new_line:
+    sys.stdout.write("\n")
+  sys.stdout.flush()
 
 def BiRNN(batch_x, seq_length, dropout):
     r'''
@@ -479,7 +500,12 @@ def BiRNN(batch_x, seq_length, dropout):
     # Note, that this differs from the input in that it is time-major.
     layer_6 = tf.reshape(layer_6, [-1, batch_x_shape[0], n_hidden_6], name="logits")
 
-    # Output shape: [n_steps, batch_size, n_hidden_6]
+    print("# Trainable variables")
+    print("tf.trainable_variables() length: ", len(tf.trainable_variables()))
+    for param in tf.trainable_variables():
+        print("  %s, %s, %s" % (param.name, str(param.get_shape()), param.op.device))
+        print("--------------")
+
     return layer_6
 
 def decode_with_lm(inputs, sequence_length, beam_width=100,
@@ -1451,6 +1477,133 @@ def send_token_to_ps(session, kill=False):
         session.run(enqueue, feed_dict={ token_placeholder: token })
         log_debug('Sent %s token to ps %d.' % (kind, index))
 
+def fill_maps_nodename_ionames(train_model_graph, map_nodename_inputnames, map_nodename_outputnames):
+    all_ops = train_model_graph.get_operations()
+    print("len train_model_graph.get_operations(): ", len(all_ops))
+    for node in all_ops:
+        input_names = []
+        output_names = []
+        
+        for (i, inp) in enumerate(node.inputs):
+            # strip device placement num from name 
+            ionodename = inp.name
+            words_out = ionodename.split(":") 
+            if len(words_out)>1:
+                ionodename = words_out[-2]
+            input_names.append(ionodename)
+       
+        for (i, outp) in enumerate(node.outputs):
+            # strip device placement num from name 
+            ionodename = outp.name
+            words_out = ionodename.split(":") 
+            if len(words_out)>1:
+                ionodename = words_out[-2]
+            output_names.append(ionodename)
+       
+        map_nodename_inputnames[node.name] =  input_names
+        map_nodename_outputnames[node.name] =  output_names
+        
+
+def fill_map_nodename_result_shape(step_stats, map_nodename_resultshape):
+    acc = 0
+    for dev_stats in step_stats.dev_stats:
+        for node_stat in dev_stats.node_stats:
+            
+            if not node_stat.output:
+                continue
+
+            output_shapes = []
+            for (i, node_stat_out) in enumerate(node_stat.output):
+            
+                node_stat_dims = node_stat_out.tensor_description.shape.dim
+                node_stat_shape = tensor_shape.TensorShape(
+                    [d.size for d in node_stat_dims])
+                
+                shape_str = node_stat_shape.__str__()
+                output_shapes.append(shape_str)
+   
+             # strip device placement num from name 
+            ionodename = node_stat.node_name
+            ionodename_before = ionodename
+
+            words_out = ionodename.split(":") 
+            if len(words_out)>1:
+                ionodename = words_out[-2]
+                
+            if ionodename_before !=ionodename:
+                print("before strip: ", ionodename)
+                print("after  strip: ", ionodename)
+
+            map_nodename_resultshape[ionodename] = output_shapes
+            
+            
+def fill_map_nodename_input_output_shapes(map_nodename_resultshape, map_nodename_inputnames, map_nodename_outputnames, final_map_shapes):
+     
+    for k,v in map_nodename_resultshape.items():
+        final_io_shapes = []
+        
+        final_io_shapes.append("In:")
+        
+        if k in map_nodename_inputnames:
+            all_input_names = map_nodename_inputnames[k]
+            
+            for inp in all_input_names:
+                if inp in map_nodename_resultshape:                
+                    final_io_shapes.extend(map_nodename_resultshape[inp])
+                else:
+                    final_io_shapes.extend(["()"])
+        else:
+            final_io_shapes.extend(["()"])
+                 
+        final_io_shapes.extend(["Out:"])
+        final_io_shapes.extend(v)
+        final_map_shapes[k] = final_io_shapes
+        
+                      
+def accumulate_op_time(graph, step_stats, timing_map):
+
+    #print('start acc:')
+    acc = 0
+    for dev_stats in step_stats.dev_stats:
+        for node_stat in dev_stats.node_stats:
+            acc = acc + 1
+            
+            #if acc%300==0:
+            #    print('acc:', acc, len(dev_stats.node_stats), len(step_stats.dev_stats))
+            
+               
+            # print(node_stats)
+            op_time = node_stat.op_end_rel_micros - node_stat.op_start_rel_micros
+
+            if node_stat.node_name in timing_map:
+                ttt = timing_map[node_stat.node_name]
+                ttt[0] += op_time
+                ttt[1].add("Input size: X")
+            else:
+                init_set = set()
+                init_set.add("Input size: X0")
+                timing_map[node_stat.node_name] = [op_time, init_set]
+            
+## unused for now
+#def init_stats():
+#  """Initialize statistics that we want to accumulate."""
+#  return {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0,
+#          "total_count": 0.0, "grad_norm": 0.0}
+
+#def update_stats(stats, start_time, step_result):
+#  """Update stats: write summary and accumulate statistics."""
+#  (_, step_loss, step_predict_count, step_summary, global_step,
+#   step_word_count, batch_size, grad_norm, learning_rate) = step_result
+
+#  # Update statistics
+#  stats["step_time"] += (time.time() - start_time)
+#  stats["loss"] += (step_loss * batch_size)
+#  stats["predict_count"] += step_predict_count
+#  stats["total_count"] += float(step_word_count)
+#  stats["grad_norm"] += grad_norm
+#  return global_step, learning_rate, step_summary
+
+
 def train(server=None):
     r'''
     Trains the network on a given server of a cluster.
@@ -1571,6 +1724,25 @@ def train(server=None):
 
         init_from_frozen_model_op = tf.group(*assign_ops)
 
+    timing_map = dict()
+    map_nodename_inputnames = dict()
+    map_nodename_outputnames = dict()
+    map_nodename_resultshape = dict()
+    final_map_shapes = dict()
+     
+    total_time1 = 0
+    op_info_found = False
+  
+    last_stats_step = 0
+    #steps_per_stats  = 20
+    #num_train_steps = 100
+
+    ## unused for now
+    #Summary writer - for node highlighting in tensorboard
+    #summary_writer = tf.summary.FileWriter(
+    #  os.path.join(out_dir, summary_name), train_model.graph)
+    
+
     # The MonitoredTrainingSession takes care of session initialization,
     # restoring from a checkpoint, saving to a checkpoint, and closing when done
     # or an error occurs.
@@ -1629,16 +1801,75 @@ def train(server=None):
 
                     # Loop over the batches
                     for job_step in range(job.steps):
+                       ### Run a step ###
+                        start_time = time.time()
+                        start_time1 = time.time()
+
                         if session.should_stop():
                             break
 
                         log_debug('Starting batch...')
-                        # Compute the batch
-                        _, current_step, batch_loss, batch_report = session.run([train_op, global_step, loss, report_params], **extra_params)
 
+                        options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                        run_metadata = tf.RunMetadata()
+                        # Compute the batch
+                        #_, current_step, batch_loss, batch_report = session.run([train_op, global_step, loss, report_params], **extra_params)
+                        _, current_step, batch_loss, batch_report = session.run([train_op, global_step, loss, report_params], **extra_params , options=options, run_metadata=run_metadata)
+
+                        # Process step_result, accumulate stats, and write summary
+                        # global_step, info["learning_rate"], step_summary = update_stats(stats, start_time, step_result)
+                        # summary_writer.add_summary(step_summary, global_step) - for red nodes in tensorboard
+                        # summary_writer.add_run_metadata(run_metadata, "global_step%d" % global_step) - for red nodes in tensorboard
+                        
                         # Uncomment the next line for debugging race conditions / distributed TF
                         log_debug('Finished batch step %d.' % current_step)
 
+                        end_time1 = time.time()
+                        step_time_current = end_time1 - start_time1
+                        
+                        print("Train step finished in %4.4f seconds" % (step_time_current))
+                        total_time1 = total_time1 + step_time_current
+
+                        if run_metadata is not None:
+
+                            train_model_graph = tf.get_default_graph()
+                            accumulate_op_time(train_model_graph, run_metadata.step_stats, timing_map)
+                         
+                            if not op_info_found:
+                                start_time_fillmap = time.time()
+
+                                fill_maps_nodename_ionames(train_model_graph, map_nodename_inputnames, map_nodename_outputnames)
+                                fill_map_nodename_result_shape(run_metadata.step_stats, map_nodename_resultshape)
+                                fill_map_nodename_input_output_shapes(map_nodename_resultshape, map_nodename_inputnames, map_nodename_outputnames, final_map_shapes)
+                                
+                             
+                                end_time_fillmap = time.time()
+                                print("start_time_fillmap total_time  %4.4f seconds" % (end_time_fillmap - start_time_fillmap))
+                                
+                                op_info_found = True
+                        else:
+                            print("metadata is none")
+                            
+                        # ------------------7 ------------------
+                        
+                        
+                        # ----8 ----
+                            # dump traces
+                        print('Step# ', current_step)       
+                        if current_step - last_stats_step >= steps_per_stats:    
+                          fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                          chrome_trace = fetched_timeline.generate_chrome_trace_format(show_memory=True) # <------------!!!
+                          print('Traces saved at step ', current_step)
+                          last_stats_step = current_step
+                          
+                          #csv_file_output = open("timeline_deepspeech_for_deepbench_hidden_%d_batch_%d_timesteps_%d_step_%d.json" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch, current_step),'w')
+  
+  
+                          #with open('timeline_seq2seq_%d.json' % current_step, 'w') as f: #APPEND ?!?
+                          with open("timeline_deepspeech_for_deepbench_hidden_%d_batch_%d_timesteps_%d_step_%d.json" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch, current_step),'w') as f:
+                              f.write(chrome_trace)  
+        
+                        # ----- 8 ---- -
                         # Add batch to loss
                         total_loss += batch_loss
 
@@ -1680,6 +1911,147 @@ def train(server=None):
                   ' between train runs using the same checkpoint dir? Try moving'
                   ' or removing the contents of {0}.'.format(FLAGS.checkpoint_dir))
         sys.exit(1)
+  
+    sorted_times = ( (key, value) for key, value in sorted(timing_map.items(), key=lambda x: list(x[1])[0], reverse=True)) # list() was unexpected here ...
+    sorted_times = list(sorted_times) # and here ... - to account for generator not resetting state when iterationg second time for k,v in sorted_times
+  
+    top_k_ops = 1000
+    topk_ops_printed = 0
+    tot_time_in_top_ops = 0
+
+    tot_time_in_top10_ops = 0
+    tot_time_in_top50_ops = 0
+    tot_time_in_top100_ops = 0
+    tot_time_in_top150_ops = 0
+    tot_time_in_top200_ops = 0
+    tot_time_in_top500_ops = 0
+    tot_time_in_top1000_ops = 0
+    tot_time_in_all_ops = 0 
+
+    op_count = 0
+
+    for k1,v1 in sorted_times:
+        op_count = op_count + 1
+        tot_time_in_top_ops1 = v1[0]
+        tot_time_in_top_ops = tot_time_in_top_ops + tot_time_in_top_ops1
+
+        if op_count <= 10:
+          tot_time_in_top10_ops = tot_time_in_top10_ops + tot_time_in_top_ops1
+        if op_count <= 50:
+          tot_time_in_top50_ops = tot_time_in_top50_ops + tot_time_in_top_ops1
+        if op_count <= 100:
+          tot_time_in_top100_ops = tot_time_in_top100_ops + tot_time_in_top_ops1
+        if op_count <= 150:
+          tot_time_in_top150_ops = tot_time_in_top150_ops + tot_time_in_top_ops1
+        if op_count <= 200:
+          tot_time_in_top200_ops = tot_time_in_top200_ops + tot_time_in_top_ops1
+        if op_count <= 500:
+          tot_time_in_top500_ops = tot_time_in_top500_ops + tot_time_in_top_ops1
+        if op_count <= 1000:
+          tot_time_in_top1000_ops = tot_time_in_top1000_ops + tot_time_in_top_ops1
+
+        tot_time_in_all_ops = tot_time_in_all_ops + tot_time_in_top_ops1
+      
+
+
+
+
+    import csv
+    #csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d.csv" % (n_hidden, FLAGS.train_batch_size),'w')
+    csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.tsv" % (n_hidden, FLAGS.train_batch_size, FLAGS.epoch),'w')
+  
+    writer = csv.writer(csv_file_output, delimiter='\t')#,quoting=csv.QUOTE_MINIMAL) quotechar='"', 
+
+    print('--------------------------------------')
+    header_str = "Time Rank\tTime %\tCumulative time %\tTime, ms\tOp name\tInput/output tensor shapes"
+    header_str_csv = ['Time Rank', 'Time % total', 'Cumulative time %', 'Wall Time, ms', 'Op name', 'Input/output tensor shape']
+   
+    print(header_str)
+    writer.writerow(header_str_csv)
+
+    op_count = 0
+    cumul_time = 0.0
+    for k,v in sorted_times:
+      op_count = op_count + 1
+      tot_time_in_top_ops1 = v[0]
+      
+      shape_str = ""
+      if k in final_map_shapes:
+          #print('IO tensor dimensions: ', final_map_shapes[k])
+          shape_str = final_map_shapes[k]
+      else:
+          orig_k = k
+          ionodename = k
+          words_out = k.split(":") 
+          if len(words_out)>1:
+              ionodename = words_out[-2]
+          
+          if ionodename in final_map_shapes:
+              shape_str = final_map_shapes[ionodename]
+              #print('IO tensor dimensions: ', final_map_shapes[ionodename])
+          else:
+              shape_str = 'N/A'
+
+              #print('IO tensor dimensions not found for ', ionodename , " and ", orig_k)
+      
+      cumul_time += 100.0*tot_time_in_top_ops1/float(tot_time_in_all_ops)
+      
+      current_row_output =  "%d\t%5.3f\t%5.3f\t%5.3f\t%s\t%s" % (op_count, 100.0*tot_time_in_top_ops1/float(tot_time_in_all_ops), cumul_time, tot_time_in_top_ops1/(1000.0*float(num_train_steps)), k, ' '.join(shape_str))
+      current_row_output_csv =  [op_count, "%3.2f" % (100.0*tot_time_in_top_ops1/float(tot_time_in_all_ops)), "%3.2f" % cumul_time, tot_time_in_top_ops1/(1000.0*float(num_train_steps)), k, ' '.join(shape_str)]
+    
+      print(current_row_output)
+      writer.writerow(current_row_output_csv)
+      
+      
+      
+      #np.savetxt('data.csv', (col1_array, col2_array, col3_array), delimiter=',')
+
+        
+      #print("Node: %s\t Shapes - %s" % (k, ' '.join(shape_str)))
+
+
+      #        
+      # print('--------------------------------------')    
+      
+      #topk_ops_printed = topk_ops_printed + 1
+      #if topk_ops_printed == top_k_ops:
+      #    break
+    print('--------------------------------------')    
+
+    #csv_file_output.close()
+
+
+    """
+    csv_file_output.close()
+
+    import pandas as pd
+    import xlsxwriter
+
+    csv_file_output = open("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.csv" % (n_hidden, FLAGS.train_batch_size),'w')
+  
+    path7 = csv_file_output
+    #read the csv into a pandas dataframe
+    data7 = pd.read_csv(path7)    
+    #setup the writer
+    writer = pd.ExcelWriter("deepspeech_ops_time_dyn_shape_name_for_deepbench_hidden_%d_batch_%d_timesteps_%d.csv" % (n_hidden, FLAGS.train_batch_size) +  '.xlsx', engine='xlsxwriter')
+    #write the dataframe to an xlsx file
+    data7.to_excel(writer, sheet_name='Results', index=False)
+    writer.save()
+    """
+
+    
+    mean_time_per_step = float(total_time1)/num_train_steps
+    mean_allops_time_per_step = float(tot_time_in_all_ops)/(num_train_steps*1000000.0)
+
+    print("Mean time for 1 training step, sec: %5.5f" % (mean_time_per_step))
+    print("Top 10 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top10_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top10_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 50 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top50_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top50_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 100 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top100_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top100_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 150 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top150_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top150_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 200 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top200_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top200_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 500 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top500_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top500_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("Top 1000 ops total mean time: %5.5f sec out of %5.5f sec (%5.1f%%)" % (tot_time_in_top1000_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_top1000_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
+    print("All ops (%d) mean time, sec: %5.5f out of %5.5f sec (%5.1f%%)" % (op_count, tot_time_in_all_ops/(1000000.0*num_train_steps), mean_allops_time_per_step, tot_time_in_all_ops/(0.01*1000000.0*num_train_steps*mean_allops_time_per_step)))
 
 def create_inference_graph(batch_size=None, use_new_decoder=False):
     # Input tensor will be of shape [batch_size, n_steps, n_input + 2*n_input*n_context]
